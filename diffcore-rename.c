@@ -933,7 +933,7 @@ static int find_basename_matches(struct diff_options *options,
 	 * spend more cycles to find similarities between files, so it may
 	 * be less likely that this heuristic is wanted.  If someone is
 	 * doing break detection, that means they do not want filename
-	 * similarity to imply any form of content similiarity, and thus
+	 * similarity to imply any form of content similarity, and thus
 	 * this heuristic would definitely be incompatible.
 	 */
 
@@ -1388,7 +1388,7 @@ void diffcore_rename_extended(struct diff_options *options,
 	int detect_rename = options->detect_rename;
 	int minimum_score = options->rename_score;
 	struct diff_queue_struct *q = &diff_queued_diff;
-	struct diff_queue_struct outq;
+	struct diff_queue_struct outq = DIFF_QUEUE_INIT;
 	struct diff_score *mx;
 	int i, j, rename_count, skip_unmodified = 0;
 	int num_destinations, dst_cnt;
@@ -1534,7 +1534,7 @@ void diffcore_rename_extended(struct diff_options *options,
 		 *   - remove ones not found in relevant_sources
 		 * and
 		 *   - remove ones in relevant_sources which are needed only
-		 *     for directory renames IF no ancestory directory
+		 *     for directory renames IF no ancestry directory
 		 *     actually needs to know any more individual path
 		 *     renames under them
 		 */
@@ -1638,7 +1638,6 @@ void diffcore_rename_extended(struct diff_options *options,
 	 * are recorded in rename_dst.  The original list is still in *q.
 	 */
 	trace2_region_enter("diff", "write back to queue", options->repo);
-	DIFF_QUEUE_CLEAR(&outq);
 	for (i = 0; i < q->nr; i++) {
 		struct diff_filepair *p = q->queue[i];
 		struct diff_filepair *pair_to_free = NULL;

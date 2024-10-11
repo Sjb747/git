@@ -31,6 +31,7 @@
 #include "tree.h"
 #include "wildmatch.h"
 #include "write-or-die.h"
+#include "pager.h"
 
 static struct decoration name_decoration = { "object names" };
 static int decoration_loaded;
@@ -145,7 +146,7 @@ static int ref_filter_match(const char *refname,
 	return 1;
 }
 
-static int add_ref_decoration(const char *refname, const struct object_id *oid,
+static int add_ref_decoration(const char *refname, const char *referent UNUSED, const struct object_id *oid,
 			      int flags UNUSED,
 			      void *cb_data)
 {
@@ -411,16 +412,6 @@ void show_decorations(struct rev_info *opt, struct commit *commit)
 	strbuf_release(&sb);
 }
 
-static unsigned int digits_in_number(unsigned int number)
-{
-	unsigned int i = 10, result = 1;
-	while (i <= number) {
-		i *= 10;
-		result++;
-	}
-	return result;
-}
-
 void fmt_output_subject(struct strbuf *filename,
 			const char *subject,
 			struct rev_info *info)
@@ -464,7 +455,7 @@ void fmt_output_email_subject(struct strbuf *sb, struct rev_info *opt)
 		strbuf_addf(sb, "Subject: [%s%s%0*d/%d] ",
 			    opt->subject_prefix,
 			    *opt->subject_prefix ? " " : "",
-			    digits_in_number(opt->total),
+			    decimal_width(opt->total),
 			    opt->nr, opt->total);
 	} else if (opt->total == 0 && opt->subject_prefix && *opt->subject_prefix) {
 		strbuf_addf(sb, "Subject: [%s] ",
@@ -684,7 +675,7 @@ static void show_diff_of_diff(struct rev_info *opt)
 		struct diff_queue_struct dq;
 
 		memcpy(&dq, &diff_queued_diff, sizeof(diff_queued_diff));
-		DIFF_QUEUE_CLEAR(&diff_queued_diff);
+		diff_queue_init(&diff_queued_diff);
 
 		fprintf_ln(opt->diffopt.file, "\n%s", opt->idiff_title);
 		show_interdiff(opt->idiff_oid1, opt->idiff_oid2, 2,
@@ -703,7 +694,7 @@ static void show_diff_of_diff(struct rev_info *opt)
 		};
 
 		memcpy(&dq, &diff_queued_diff, sizeof(diff_queued_diff));
-		DIFF_QUEUE_CLEAR(&diff_queued_diff);
+		diff_queue_init(&diff_queued_diff);
 
 		fprintf_ln(opt->diffopt.file, "\n%s", opt->rdiff_title);
 		/*
@@ -931,12 +922,7 @@ int log_tree_diff_flush(struct rev_info *opt)
 			 * diff/diffstat output for readability.
 			 */
 			int pch = DIFF_FORMAT_DIFFSTAT | DIFF_FORMAT_PATCH;
-			if (opt->diffopt.output_prefix) {
-				struct strbuf *msg = NULL;
-				msg = opt->diffopt.output_prefix(&opt->diffopt,
-					opt->diffopt.output_prefix_data);
-				fwrite(msg->buf, msg->len, 1, opt->diffopt.file);
-			}
+			fputs(diff_line_prefix(&opt->diffopt), opt->diffopt.file);
 
 			/*
 			 * We may have shown three-dashes line early
@@ -1024,8 +1010,19 @@ static int do_remerge_diff(struct rev_info *opt,
 	struct strbuf parent1_desc = STRBUF_INIT;
 	struct strbuf parent2_desc = STRBUF_INIT;
 
+	/*
+	 * Lazily prepare a temporary object directory and rotate it
+	 * into the alternative object store list as the primary.
+	 */
+	if (opt->remerge_diff && !opt->remerge_objdir) {
+		opt->remerge_objdir = tmp_objdir_create("remerge-diff");
+		if (!opt->remerge_objdir)
+			return error(_("unable to create temporary object directory"));
+		tmp_objdir_replace_primary_odb(opt->remerge_objdir, 1);
+	}
+
 	/* Setup merge options */
-	init_merge_options(&o, the_repository);
+	init_ui_merge_options(&o, the_repository);
 	o.show_rename_progress = 0;
 	o.record_conflict_msgs_as_headers = 1;
 	o.msg_header_prefix = "remerge";
@@ -1060,10 +1057,7 @@ static int do_remerge_diff(struct rev_info *opt,
 	merge_finalize(&o, &res);
 
 	/* Clean up the contents of the temporary object directory */
-	if (opt->remerge_objdir)
-		tmp_objdir_discard_objects(opt->remerge_objdir);
-	else
-		BUG("did a remerge diff without remerge_objdir?!?");
+	tmp_objdir_discard_objects(opt->remerge_objdir);
 
 	return !opt->loginfo;
 }

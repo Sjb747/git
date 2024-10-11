@@ -512,7 +512,7 @@ static void run_service(const char **argv, int buffer_input)
 		exit(1);
 }
 
-static int show_text_ref(const char *name, const struct object_id *oid,
+static int show_text_ref(const char *name, const char *referent UNUSED, const struct object_id *oid,
 			 int flag UNUSED, void *cb_data)
 {
 	const char *name_nons = strip_namespace(name);
@@ -568,7 +568,7 @@ static void get_info_refs(struct strbuf *hdr, char *arg UNUSED)
 	strbuf_release(&buf);
 }
 
-static int show_head_ref(const char *refname, const struct object_id *oid,
+static int show_head_ref(const char *refname, const char *referent UNUSED, const struct object_id *oid,
 			 int flag, void *cb_data)
 {
 	struct strbuf *buf = cb_data;
@@ -601,7 +601,7 @@ static void get_head(struct strbuf *hdr, char *arg UNUSED)
 
 static void get_info_packs(struct strbuf *hdr, char *arg UNUSED)
 {
-	size_t objdirlen = strlen(get_object_directory());
+	size_t objdirlen = strlen(repo_get_object_directory(the_repository));
 	struct strbuf buf = STRBUF_INIT;
 	struct packed_git *p;
 	size_t cnt = 0;

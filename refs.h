@@ -3,7 +3,9 @@
 
 #include "commit.h"
 #include "repository.h"
+#include "repo-settings.h"
 
+struct fsck_options;
 struct object_id;
 struct ref_store;
 struct strbuf;
@@ -15,7 +17,7 @@ enum ref_storage_format ref_storage_format_by_name(const char *name);
 const char *ref_storage_format_to_name(enum ref_storage_format ref_storage_format);
 
 /*
- * Resolve a reference, recursively following symbolic refererences.
+ * Resolve a reference, recursively following symbolic references.
  *
  * Return the name of the non-symbolic reference that ultimately pointed
  * at the resolved object name.  The return value, if not NULL, is a
@@ -110,7 +112,8 @@ int refs_verify_refname_available(struct ref_store *refs,
 
 int refs_ref_exists(struct ref_store *refs, const char *refname);
 
-int should_autocreate_reflog(const char *refname);
+int should_autocreate_reflog(enum log_refs_config log_all_ref_updates,
+			     const char *refname);
 
 int is_branch(const char *refname);
 
@@ -298,7 +301,7 @@ struct ref_transaction;
  * arguments is only guaranteed to be valid for the duration of a
  * single callback invocation.
  */
-typedef int each_ref_fn(const char *refname,
+typedef int each_ref_fn(const char *refname, const char *referent,
 			const struct object_id *oid, int flags, void *cb_data);
 
 /*
@@ -487,7 +490,7 @@ int refs_delete_reflog(struct ref_store *refs, const char *refname);
  * from UTC.  Its absolute value is formed by multiplying the hour
  * part by 100 and adding the minute part.  For example, 1 hour ahead
  * of UTC, CET == "+0100", is represented as positive one hundred (not
- * postiive sixty).
+ * positive sixty).
  *
  * The msg parameter is a single complete line; a reflog message given
  * to refs_delete_ref, refs_update_ref, etc. is returned to the
@@ -540,6 +543,13 @@ int refs_for_each_reflog(struct ref_store *refs, each_reflog_fn fn, void *cb_dat
  * repeated slashes are accepted.
  */
 int check_refname_format(const char *refname, int flags);
+
+/*
+ * Check the reference database for consistency. Return 0 if refs and
+ * reflogs are consistent, and non-zero otherwise. The errors will be
+ * written to stderr.
+ */
+int refs_fsck(struct ref_store *refs, struct fsck_options *o);
 
 /*
  * Apply the rules from check_refname_format, but mutate the result until it
@@ -851,6 +861,15 @@ int ref_is_hidden(const char *, const char *, const struct strvec *);
  */
 const char **hidden_refs_to_excludes(const struct strvec *hide_refs);
 
+/*
+ * Prefix all exclude patterns with the namespace, if any. This is required
+ * because exclude patterns apply to the stripped reference name, not the full
+ * reference name with the namespace.
+ */
+const char **get_namespaced_exclude_patterns(const char **exclude_patterns,
+					     const char *namespace,
+					     struct strvec *out);
+
 /* Is this a per-worktree ref living in the refs/ namespace? */
 int is_per_worktree_ref(const char *refname);
 
@@ -978,7 +997,7 @@ struct ref_store *get_worktree_ref_store(const struct worktree *wt);
 
 /*
  * Some of the names specified by refs have special meaning to Git.
- * Organize these namespaces in a comon 'ref_namespace' array for
+ * Organize these namespaces in a common 'ref_namespace' array for
  * reference from multiple places in the codebase.
  */
 
@@ -1085,212 +1104,5 @@ int repo_migrate_ref_storage_format(struct repository *repo,
 				    enum ref_storage_format format,
 				    unsigned int flags,
 				    struct strbuf *err);
-
-/*
- * The following functions have been removed in Git v2.46 in favor of functions
- * that receive a `ref_store` as parameter. The intent of this section is
- * merely to help patch authors of in-flight series to have a reference what
- * they should be migrating to. The section will be removed in Git v2.47.
- */
-#if 0
-static char *resolve_refdup(const char *refname, int resolve_flags,
-			    struct object_id *oid, int *flags)
-{
-	return refs_resolve_refdup(get_main_ref_store(the_repository),
-				   refname, resolve_flags,
-				   oid, flags);
-}
-
-static int read_ref_full(const char *refname, int resolve_flags,
-			 struct object_id *oid, int *flags)
-{
-	return refs_read_ref_full(get_main_ref_store(the_repository), refname,
-				  resolve_flags, oid, flags);
-}
-
-static int read_ref(const char *refname, struct object_id *oid)
-{
-	return refs_read_ref(get_main_ref_store(the_repository), refname, oid);
-}
-
-static int ref_exists(const char *refname)
-{
-	return refs_ref_exists(get_main_ref_store(the_repository), refname);
-}
-
-static int for_each_tag_ref(each_ref_fn fn, void *cb_data)
-{
-	return refs_for_each_tag_ref(get_main_ref_store(the_repository), fn, cb_data);
-}
-
-static int for_each_branch_ref(each_ref_fn fn, void *cb_data)
-{
-	return refs_for_each_branch_ref(get_main_ref_store(the_repository), fn, cb_data);
-}
-
-static int for_each_remote_ref(each_ref_fn fn, void *cb_data)
-{
-	return refs_for_each_remote_ref(get_main_ref_store(the_repository), fn, cb_data);
-}
-
-static int head_ref_namespaced(each_ref_fn fn, void *cb_data)
-{
-	return refs_head_ref_namespaced(get_main_ref_store(the_repository),
-					fn, cb_data);
-}
-
-static int for_each_glob_ref_in(each_ref_fn fn, const char *pattern,
-				const char *prefix, void *cb_data)
-{
-	return refs_for_each_glob_ref_in(get_main_ref_store(the_repository),
-					 fn, pattern, prefix, cb_data);
-}
-
-static int for_each_glob_ref(each_ref_fn fn, const char *pattern, void *cb_data)
-{
-	return refs_for_each_glob_ref(get_main_ref_store(the_repository),
-				      fn, pattern, cb_data);
-}
-
-static int delete_ref(const char *msg, const char *refname,
-		      const struct object_id *old_oid, unsigned int flags)
-{
-	return refs_delete_ref(get_main_ref_store(the_repository), msg, refname,
-			       old_oid, flags);
-}
-
-static struct ref_transaction *ref_transaction_begin(struct strbuf *err)
-{
-	return ref_store_transaction_begin(get_main_ref_store(the_repository), err);
-}
-
-static int update_ref(const char *msg, const char *refname,
-		      const struct object_id *new_oid,
-		      const struct object_id *old_oid,
-		      unsigned int flags, enum action_on_err onerr)
-{
-	return refs_update_ref(get_main_ref_store(the_repository), msg, refname, new_oid,
-			       old_oid, flags, onerr);
-}
-
-static char *shorten_unambiguous_ref(const char *refname, int strict)
-{
-	return refs_shorten_unambiguous_ref(get_main_ref_store(the_repository),
-					    refname, strict);
-}
-
-static int head_ref(each_ref_fn fn, void *cb_data)
-{
-	return refs_head_ref(get_main_ref_store(the_repository), fn, cb_data);
-}
-
-static int for_each_ref(each_ref_fn fn, void *cb_data)
-{
-	return refs_for_each_ref(get_main_ref_store(the_repository), fn, cb_data);
-}
-
-static int for_each_ref_in(const char *prefix, each_ref_fn fn, void *cb_data)
-{
-	return refs_for_each_ref_in(get_main_ref_store(the_repository), prefix, fn, cb_data);
-}
-
-static int for_each_fullref_in(const char *prefix,
-			       const char **exclude_patterns,
-			       each_ref_fn fn, void *cb_data)
-{
-	return refs_for_each_fullref_in(get_main_ref_store(the_repository),
-					prefix, exclude_patterns, fn, cb_data);
-}
-
-static int for_each_namespaced_ref(const char **exclude_patterns,
-				   each_ref_fn fn, void *cb_data)
-{
-	return refs_for_each_namespaced_ref(get_main_ref_store(the_repository),
-					    exclude_patterns, fn, cb_data);
-}
-
-static int for_each_rawref(each_ref_fn fn, void *cb_data)
-{
-	return refs_for_each_rawref(get_main_ref_store(the_repository), fn, cb_data);
-}
-
-static const char *resolve_ref_unsafe(const char *refname, int resolve_flags,
-				      struct object_id *oid, int *flags)
-{
-	return refs_resolve_ref_unsafe(get_main_ref_store(the_repository), refname,
-				       resolve_flags, oid, flags);
-}
-
-static int create_symref(const char *ref_target, const char *refs_heads_master,
-			 const char *logmsg)
-{
-	return refs_create_symref(get_main_ref_store(the_repository), ref_target,
-				  refs_heads_master, logmsg);
-}
-
-static int for_each_reflog(each_reflog_fn fn, void *cb_data)
-{
-	return refs_for_each_reflog(get_main_ref_store(the_repository), fn, cb_data);
-}
-
-static int for_each_reflog_ent_reverse(const char *refname, each_reflog_ent_fn fn,
-				       void *cb_data)
-{
-	return refs_for_each_reflog_ent_reverse(get_main_ref_store(the_repository),
-						refname, fn, cb_data);
-}
-
-static int for_each_reflog_ent(const char *refname, each_reflog_ent_fn fn,
-			       void *cb_data)
-{
-	return refs_for_each_reflog_ent(get_main_ref_store(the_repository), refname,
-					fn, cb_data);
-}
-
-static int reflog_exists(const char *refname)
-{
-	return refs_reflog_exists(get_main_ref_store(the_repository), refname);
-}
-
-static int safe_create_reflog(const char *refname, struct strbuf *err)
-{
-	return refs_create_reflog(get_main_ref_store(the_repository), refname,
-				  err);
-}
-
-static int delete_reflog(const char *refname)
-{
-	return refs_delete_reflog(get_main_ref_store(the_repository), refname);
-}
-
-static int reflog_expire(const char *refname,
-			 unsigned int flags,
-			 reflog_expiry_prepare_fn prepare_fn,
-			 reflog_expiry_should_prune_fn should_prune_fn,
-			 reflog_expiry_cleanup_fn cleanup_fn,
-			 void *policy_cb_data)
-{
-	return refs_reflog_expire(get_main_ref_store(the_repository),
-				  refname, flags,
-				  prepare_fn, should_prune_fn,
-				  cleanup_fn, policy_cb_data);
-}
-
-static int delete_refs(const char *msg, struct string_list *refnames,
-		       unsigned int flags)
-{
-	return refs_delete_refs(get_main_ref_store(the_repository), msg, refnames, flags);
-}
-
-static int rename_ref(const char *oldref, const char *newref, const char *logmsg)
-{
-	return refs_rename_ref(get_main_ref_store(the_repository), oldref, newref, logmsg);
-}
-
-static int copy_existing_ref(const char *oldref, const char *newref, const char *logmsg)
-{
-	return refs_copy_existing_ref(get_main_ref_store(the_repository), oldref, newref, logmsg);
-}
-#endif
 
 #endif /* REFS_H */

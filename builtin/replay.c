@@ -4,6 +4,7 @@
 
 #include "git-compat-util.h"
 
+#define USE_THE_REPOSITORY_VARIABLE
 #include "builtin.h"
 #include "environment.h"
 #include "hex.h"
@@ -151,7 +152,7 @@ static void get_ref_information(struct rev_cmdline_info *cmd_info,
 
 static void determine_replay_mode(struct rev_cmdline_info *cmd_info,
 				  const char *onto_name,
-				  const char **advance_name,
+				  char **advance_name,
 				  struct commit **onto,
 				  struct strset **update_refs)
 {
@@ -174,6 +175,7 @@ static void determine_replay_mode(struct rev_cmdline_info *cmd_info,
 		*onto = peel_committish(*advance_name);
 		if (repo_dwim_ref(the_repository, *advance_name, strlen(*advance_name),
 			     &oid, &fullname, 0) == 1) {
+			free(*advance_name);
 			*advance_name = fullname;
 		} else {
 			die(_("argument to --advance must be a reference"));
@@ -197,6 +199,7 @@ static void determine_replay_mode(struct rev_cmdline_info *cmd_info,
 		if (negative_refs_complete) {
 			struct hashmap_iter iter;
 			struct strmap_entry *entry;
+			const char *last_key = NULL;
 
 			if (rinfo.negative_refexprs == 0)
 				die(_("all positive revisions given must be references"));
@@ -208,8 +211,11 @@ static void determine_replay_mode(struct rev_cmdline_info *cmd_info,
 			/* Only one entry, but we have to loop to get it */
 			strset_for_each_entry(&rinfo.negative_refs,
 					      &iter, entry) {
-				*advance_name = entry->key;
+				last_key = entry->key;
 			}
+
+			free(*advance_name);
+			*advance_name = xstrdup_or_null(last_key);
 		} else { /* positive_refs_complete */
 			if (rinfo.negative_refexprs > 1)
 				die(_("cannot implicitly determine correct base for --onto"));
@@ -269,9 +275,13 @@ static struct commit *pick_regular_commit(struct commit *pickme,
 	return create_commit(result->tree, pickme, replayed_base);
 }
 
-int cmd_replay(int argc, const char **argv, const char *prefix)
+int cmd_replay(int argc,
+	       const char **argv,
+	       const char *prefix,
+	       struct repository *repo UNUSED)
 {
-	const char *advance_name = NULL;
+	const char *advance_name_opt = NULL;
+	char *advance_name = NULL;
 	struct commit *onto = NULL;
 	const char *onto_name = NULL;
 	int contained = 0;
@@ -292,7 +302,7 @@ int cmd_replay(int argc, const char **argv, const char *prefix)
 		NULL
 	};
 	struct option replay_options[] = {
-		OPT_STRING(0, "advance", &advance_name,
+		OPT_STRING(0, "advance", &advance_name_opt,
 			   N_("branch"),
 			   N_("make replay advance given branch")),
 		OPT_STRING(0, "onto", &onto_name,
@@ -306,14 +316,15 @@ int cmd_replay(int argc, const char **argv, const char *prefix)
 	argc = parse_options(argc, argv, prefix, replay_options, replay_usage,
 			     PARSE_OPT_KEEP_ARGV0 | PARSE_OPT_KEEP_UNKNOWN_OPT);
 
-	if (!onto_name && !advance_name) {
+	if (!onto_name && !advance_name_opt) {
 		error(_("option --onto or --advance is mandatory"));
 		usage_with_options(replay_usage, replay_options);
 	}
 
-	if (advance_name && contained)
+	if (advance_name_opt && contained)
 		die(_("options '%s' and '%s' cannot be used together"),
 		    "--advance", "--contained");
+	advance_name = xstrdup_or_null(advance_name_opt);
 
 	repo_init_revisions(the_repository, &revs, prefix);
 
@@ -377,7 +388,7 @@ int cmd_replay(int argc, const char **argv, const char *prefix)
 		goto cleanup;
 	}
 
-	init_merge_options(&merge_opt, the_repository);
+	init_basic_merge_options(&merge_opt, the_repository);
 	memset(&result, 0, sizeof(result));
 	merge_opt.show_rename_progress = 0;
 	last_commit = onto;
@@ -441,6 +452,7 @@ int cmd_replay(int argc, const char **argv, const char *prefix)
 
 cleanup:
 	release_revisions(&revs);
+	free(advance_name);
 
 	/* Return */
 	if (ret < 0)

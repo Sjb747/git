@@ -2,12 +2,9 @@
 
 test_description='exercise basic bitmap functionality'
 
+TEST_PASSES_SANITIZE_LEAK=true
 . ./test-lib.sh
 . "$TEST_DIRECTORY"/lib-bitmap.sh
-
-# t5310 deals only with single-pack bitmaps, so don't write MIDX bitmaps in
-# their place.
-GIT_TEST_MULTI_PACK_INDEX_WRITE_BITMAP=0
 
 # Likewise, allow individual tests to control whether or not they use
 # the boundary-based traversal.

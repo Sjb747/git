@@ -41,17 +41,19 @@ static inline int bitmap_writer_nr_selected_commits(struct bitmap_writer *writer
 	return writer->selected_nr - writer->pseudo_merges_nr;
 }
 
-void bitmap_writer_init(struct bitmap_writer *writer, struct repository *r)
+void bitmap_writer_init(struct bitmap_writer *writer, struct repository *r,
+			struct packing_data *pdata)
 {
 	memset(writer, 0, sizeof(struct bitmap_writer));
 	if (writer->bitmaps)
 		BUG("bitmap writer already initialized");
 	writer->bitmaps = kh_init_oid_map();
 	writer->pseudo_merge_commits = kh_init_oid_map();
+	writer->to_pack = pdata;
 
 	string_list_init_dup(&writer->pseudo_merge_groups);
 
-	load_pseudo_merges_from_config(&writer->pseudo_merge_groups);
+	load_pseudo_merges_from_config(r, &writer->pseudo_merge_groups);
 }
 
 static void free_pseudo_merge_commit_idx(struct pseudo_merge_commit_idx *idx)
@@ -60,6 +62,12 @@ static void free_pseudo_merge_commit_idx(struct pseudo_merge_commit_idx *idx)
 		return;
 	free(idx->pseudo_merge);
 	free(idx);
+}
+
+static void pseudo_merge_group_release_cb(void *payload, const char *name UNUSED)
+{
+	pseudo_merge_group_release(payload);
+	free(payload);
 }
 
 void bitmap_writer_free(struct bitmap_writer *writer)
@@ -80,6 +88,8 @@ void bitmap_writer_free(struct bitmap_writer *writer)
 	kh_foreach_value(writer->pseudo_merge_commits, idx,
 			 free_pseudo_merge_commit_idx(idx));
 	kh_destroy_oid_map(writer->pseudo_merge_commits);
+	string_list_clear_func(&writer->pseudo_merge_groups,
+			       pseudo_merge_group_release_cb);
 
 	for (i = 0; i < writer->selected_nr; i++) {
 		struct bitmapped_commit *bc = &writer->selected[i];
@@ -99,9 +109,7 @@ void bitmap_writer_show_progress(struct bitmap_writer *writer, int show)
  * Build the initial type index for the packfile or multi-pack-index
  */
 void bitmap_writer_build_type_index(struct bitmap_writer *writer,
-				    struct packing_data *to_pack,
-				    struct pack_idx_entry **index,
-				    uint32_t index_nr)
+				    struct pack_idx_entry **index)
 {
 	uint32_t i;
 
@@ -109,13 +117,13 @@ void bitmap_writer_build_type_index(struct bitmap_writer *writer,
 	writer->trees = ewah_new();
 	writer->blobs = ewah_new();
 	writer->tags = ewah_new();
-	ALLOC_ARRAY(to_pack->in_pack_pos, to_pack->nr_objects);
+	ALLOC_ARRAY(writer->to_pack->in_pack_pos, writer->to_pack->nr_objects);
 
-	for (i = 0; i < index_nr; ++i) {
+	for (i = 0; i < writer->to_pack->nr_objects; ++i) {
 		struct object_entry *entry = (struct object_entry *)index[i];
 		enum object_type real_type;
 
-		oe_set_in_pack_pos(to_pack, entry, i);
+		oe_set_in_pack_pos(writer->to_pack, entry, i);
 
 		switch (oe_type(entry)) {
 		case OBJ_COMMIT:
@@ -126,7 +134,7 @@ void bitmap_writer_build_type_index(struct bitmap_writer *writer,
 			break;
 
 		default:
-			real_type = oid_object_info(to_pack->repo,
+			real_type = oid_object_info(writer->to_pack->repo,
 						    &entry->idx.oid, NULL);
 			break;
 		}
@@ -569,8 +577,7 @@ static void store_selected(struct bitmap_writer *writer,
 	kh_value(writer->bitmaps, hash_pos) = stored;
 }
 
-int bitmap_writer_build(struct bitmap_writer *writer,
-			struct packing_data *to_pack)
+int bitmap_writer_build(struct bitmap_writer *writer)
 {
 	struct bitmap_builder bb;
 	size_t i;
@@ -581,17 +588,15 @@ int bitmap_writer_build(struct bitmap_writer *writer,
 	uint32_t *mapping;
 	int closed = 1; /* until proven otherwise */
 
-	writer->to_pack = to_pack;
-
 	if (writer->show_progress)
 		writer->progress = start_progress("Building bitmaps",
 						  writer->selected_nr);
 	trace2_region_enter("pack-bitmap-write", "building_bitmaps_total",
 			    the_repository);
 
-	old_bitmap = prepare_bitmap_git(to_pack->repo);
+	old_bitmap = prepare_bitmap_git(writer->to_pack->repo);
 	if (old_bitmap)
-		mapping = create_bitmap_mapping(old_bitmap, to_pack);
+		mapping = create_bitmap_mapping(old_bitmap, writer->to_pack);
 	else
 		mapping = NULL;
 
@@ -697,6 +702,9 @@ void bitmap_writer_select_commits(struct bitmap_writer *writer,
 	if (indexed_commits_nr < 100) {
 		for (i = 0; i < indexed_commits_nr; ++i)
 			bitmap_writer_push_commit(writer, indexed_commits[i], 0);
+
+		select_pseudo_merges(writer);
+
 		return;
 	}
 
@@ -737,7 +745,7 @@ void bitmap_writer_select_commits(struct bitmap_writer *writer,
 
 	stop_progress(&writer->progress);
 
-	select_pseudo_merges(writer, indexed_commits, indexed_commits_nr);
+	select_pseudo_merges(writer);
 }
 
 
@@ -905,6 +913,7 @@ static void write_pseudo_merges(struct bitmap_writer *writer,
 	for (i = 0; i < writer->pseudo_merges_nr; i++)
 		bitmap_free(commits_bitmap[i]);
 
+	oid_array_clear(&commits);
 	free(pseudo_merge_ofs);
 	free(commits_bitmap);
 }
@@ -1001,7 +1010,6 @@ void bitmap_writer_set_checksum(struct bitmap_writer *writer,
 
 void bitmap_writer_finish(struct bitmap_writer *writer,
 			  struct pack_idx_entry **index,
-			  uint32_t index_nr,
 			  const char *filename,
 			  uint16_t options)
 {
@@ -1034,12 +1042,13 @@ void bitmap_writer_finish(struct bitmap_writer *writer,
 	dump_bitmap(f, writer->tags);
 
 	if (options & BITMAP_OPT_LOOKUP_TABLE)
-		CALLOC_ARRAY(offsets, index_nr);
+		CALLOC_ARRAY(offsets, writer->to_pack->nr_objects);
 
 	for (i = 0; i < bitmap_writer_nr_selected_commits(writer); i++) {
 		struct bitmapped_commit *stored = &writer->selected[i];
 		int commit_pos = oid_pos(&stored->commit->object.oid, index,
-					 index_nr, oid_access);
+					 writer->to_pack->nr_objects,
+					 oid_access);
 
 		if (commit_pos < 0)
 			BUG(_("trying to write commit not in index"));
@@ -1055,7 +1064,7 @@ void bitmap_writer_finish(struct bitmap_writer *writer,
 		write_lookup_table(writer, f, offsets);
 
 	if (options & BITMAP_OPT_HASH_CACHE)
-		write_hash_cache(f, index, index_nr);
+		write_hash_cache(f, index, writer->to_pack->nr_objects);
 
 	finalize_hashfile(f, NULL, FSYNC_COMPONENT_PACK_METADATA,
 			  CSUM_HASH_IN_STREAM | CSUM_FSYNC | CSUM_CLOSE);

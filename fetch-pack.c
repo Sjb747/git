@@ -183,6 +183,7 @@ static int rev_list_insert_ref(struct fetch_negotiator *negotiator,
 }
 
 static int rev_list_insert_ref_oid(const char *refname UNUSED,
+				   const char *referent UNUSED,
 				   const struct object_id *oid,
 				   int flag UNUSED,
 				   void *cb_data)
@@ -610,6 +611,7 @@ static int mark_complete(const struct object_id *oid)
 }
 
 static int mark_complete_oid(const char *refname UNUSED,
+			     const char *referent UNUSED,
 			     const struct object_id *oid,
 			     int flag UNUSED,
 			     void *cb_data UNUSED)
@@ -1612,7 +1614,7 @@ static void receive_packfile_uris(struct packet_reader *reader,
 	while (packet_reader_read(reader) == PACKET_READ_NORMAL) {
 		if (reader->pktlen < the_hash_algo->hexsz ||
 		    reader->line[the_hash_algo->hexsz] != ' ')
-			die("expected '<hash> <uri>', got: %s\n", reader->line);
+			die("expected '<hash> <uri>', got: %s", reader->line);
 
 		string_list_append(uris, reader->line);
 	}
@@ -1837,7 +1839,7 @@ static struct ref *do_fetch_pack_v2(struct fetch_pack_args *args,
 
 		string_list_append_nodup(pack_lockfiles,
 					 xstrfmt("%s/pack/pack-%s.keep",
-						 get_object_directory(),
+						 repo_get_object_directory(the_repository),
 						 packname));
 	}
 	string_list_clear(&packfile_uris, 0);
@@ -2225,7 +2227,10 @@ void negotiate_using_fetch(const struct oid_array *negotiation_tips,
 	trace2_region_leave("fetch-pack", "negotiate_using_fetch", the_repository);
 	trace2_data_intmax("negotiate_using_fetch", the_repository,
 			   "total_rounds", negotiation_round);
+
 	clear_common_flag(acked_commits);
+	object_array_clear(&nt_object_array);
+	negotiator.release(&negotiator);
 	strbuf_release(&req_buf);
 }
 

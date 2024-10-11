@@ -1847,6 +1847,7 @@ struct refs_cb_data {
 };
 
 static int add_ref_to_set(const char *refname UNUSED,
+			  const char *referent UNUSED,
 			  const struct object_id *oid,
 			  int flags UNUSED, void *cb_data)
 {
@@ -2054,7 +2055,6 @@ static int write_commit_graph_file(struct write_commit_graph_context *ctx)
 	}
 
 	if (safe_create_leading_directories(ctx->graph_name)) {
-		UNLEAK(ctx->graph_name);
 		error(_("unable to create leading directories of %s"),
 			ctx->graph_name);
 		return -1;

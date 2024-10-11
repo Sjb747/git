@@ -11,11 +11,9 @@ https://developers.google.com/open-source/licenses/bsd
 #include "system.h"
 #include "block.h"
 #include "constants.h"
-#include "generic.h"
 #include "iter.h"
 #include "record.h"
 #include "reftable-error.h"
-#include "reftable-generic.h"
 
 uint64_t block_source_size(struct reftable_block_source *source)
 {
@@ -164,58 +162,6 @@ done:
 	return err;
 }
 
-int init_reader(struct reftable_reader *r, struct reftable_block_source *source,
-		const char *name)
-{
-	struct reftable_block footer = { NULL };
-	struct reftable_block header = { NULL };
-	int err = 0;
-	uint64_t file_size = block_source_size(source);
-
-	/* Need +1 to read type of first block. */
-	uint32_t read_size = header_size(2) + 1; /* read v2 because it's larger.  */
-	memset(r, 0, sizeof(struct reftable_reader));
-
-	if (read_size > file_size) {
-		err = REFTABLE_FORMAT_ERROR;
-		goto done;
-	}
-
-	err = block_source_read_block(source, &header, 0, read_size);
-	if (err != read_size) {
-		err = REFTABLE_IO_ERROR;
-		goto done;
-	}
-
-	if (memcmp(header.data, "REFT", 4)) {
-		err = REFTABLE_FORMAT_ERROR;
-		goto done;
-	}
-	r->version = header.data[4];
-	if (r->version != 1 && r->version != 2) {
-		err = REFTABLE_FORMAT_ERROR;
-		goto done;
-	}
-
-	r->size = file_size - footer_size(r->version);
-	r->source = *source;
-	r->name = xstrdup(name);
-	r->hash_id = 0;
-
-	err = block_source_read_block(source, &footer, r->size,
-				      footer_size(r->version));
-	if (err != footer_size(r->version)) {
-		err = REFTABLE_IO_ERROR;
-		goto done;
-	}
-
-	err = parse_footer(r, footer.data, header.data);
-done:
-	reftable_block_done(&footer);
-	reftable_block_done(&header);
-	return err;
-}
-
 struct table_iter {
 	struct reftable_reader *r;
 	uint8_t typ;
@@ -229,6 +175,7 @@ static int table_iter_init(struct table_iter *ti, struct reftable_reader *r)
 {
 	struct block_iter bi = BLOCK_ITER_INIT;
 	memset(ti, 0, sizeof(*ti));
+	reftable_reader_incref(r);
 	ti->r = r;
 	ti->bi = bi;
 	return 0;
@@ -316,6 +263,7 @@ static void table_iter_close(struct table_iter *ti)
 {
 	table_iter_block_done(ti);
 	block_iter_close(&ti->bi);
+	reftable_reader_decref(ti->r);
 }
 
 static int table_iter_next_block(struct table_iter *ti)
@@ -380,6 +328,7 @@ static int table_iter_seek_to(struct table_iter *ti, uint64_t off, uint8_t typ)
 	ti->typ = block_reader_type(&ti->br);
 	ti->block_off = off;
 	block_iter_seek_start(&ti->bi, &ti->br);
+	ti->is_finished = 0;
 	return 0;
 }
 
@@ -605,59 +554,131 @@ static void iterator_from_table_iter(struct reftable_iterator *it,
 	it->ops = &table_iter_vtable;
 }
 
-static void reader_init_iter(struct reftable_reader *r,
-			     struct reftable_iterator *it,
-			     uint8_t typ)
+int reader_init_iter(struct reftable_reader *r,
+		     struct reftable_iterator *it,
+		     uint8_t typ)
 {
 	struct reftable_reader_offsets *offs = reader_offsets_for(r, typ);
 
 	if (offs->is_present) {
 		struct table_iter *ti;
 		REFTABLE_ALLOC_ARRAY(ti, 1);
+		if (!ti)
+			return REFTABLE_OUT_OF_MEMORY_ERROR;
+
 		table_iter_init(ti, r);
 		iterator_from_table_iter(it, ti);
 	} else {
 		iterator_set_empty(it);
 	}
+
+	return 0;
 }
 
-void reftable_reader_init_ref_iterator(struct reftable_reader *r,
-				       struct reftable_iterator *it)
+int reftable_reader_init_ref_iterator(struct reftable_reader *r,
+				      struct reftable_iterator *it)
 {
-	reader_init_iter(r, it, BLOCK_TYPE_REF);
+	return reader_init_iter(r, it, BLOCK_TYPE_REF);
 }
 
-void reftable_reader_init_log_iterator(struct reftable_reader *r,
-				       struct reftable_iterator *it)
+int reftable_reader_init_log_iterator(struct reftable_reader *r,
+				      struct reftable_iterator *it)
 {
-	reader_init_iter(r, it, BLOCK_TYPE_LOG);
+	return reader_init_iter(r, it, BLOCK_TYPE_LOG);
 }
 
-void reader_close(struct reftable_reader *r)
+int reftable_reader_new(struct reftable_reader **out,
+			struct reftable_block_source *source, char const *name)
 {
-	block_source_close(&r->source);
-	FREE_AND_NULL(r->name);
-}
+	struct reftable_block footer = { 0 };
+	struct reftable_block header = { 0 };
+	struct reftable_reader *r;
+	uint64_t file_size = block_source_size(source);
+	uint32_t read_size;
+	int err;
 
-int reftable_new_reader(struct reftable_reader **p,
-			struct reftable_block_source *src, char const *name)
-{
-	struct reftable_reader *rd = reftable_calloc(1, sizeof(*rd));
-	int err = init_reader(rd, src, name);
-	if (err == 0) {
-		*p = rd;
-	} else {
-		block_source_close(src);
-		reftable_free(rd);
+	REFTABLE_CALLOC_ARRAY(r, 1);
+	if (!r) {
+		err = REFTABLE_OUT_OF_MEMORY_ERROR;
+		goto done;
+	}
+
+	/*
+	 * We need one extra byte to read the type of first block. We also
+	 * pretend to always be reading v2 of the format because it is larger.
+	 */
+	read_size = header_size(2) + 1;
+	if (read_size > file_size) {
+		err = REFTABLE_FORMAT_ERROR;
+		goto done;
+	}
+
+	err = block_source_read_block(source, &header, 0, read_size);
+	if (err != read_size) {
+		err = REFTABLE_IO_ERROR;
+		goto done;
+	}
+
+	if (memcmp(header.data, "REFT", 4)) {
+		err = REFTABLE_FORMAT_ERROR;
+		goto done;
+	}
+	r->version = header.data[4];
+	if (r->version != 1 && r->version != 2) {
+		err = REFTABLE_FORMAT_ERROR;
+		goto done;
+	}
+
+	r->size = file_size - footer_size(r->version);
+	r->source = *source;
+	r->name = reftable_strdup(name);
+	if (!r->name) {
+		err = REFTABLE_OUT_OF_MEMORY_ERROR;
+		goto done;
+	}
+	r->hash_id = 0;
+	r->refcount = 1;
+
+	err = block_source_read_block(source, &footer, r->size,
+				      footer_size(r->version));
+	if (err != footer_size(r->version)) {
+		err = REFTABLE_IO_ERROR;
+		goto done;
+	}
+
+	err = parse_footer(r, footer.data, header.data);
+	if (err)
+		goto done;
+
+	*out = r;
+
+done:
+	reftable_block_done(&footer);
+	reftable_block_done(&header);
+	if (err) {
+		reftable_free(r);
+		block_source_close(source);
 	}
 	return err;
 }
 
-void reftable_reader_free(struct reftable_reader *r)
+void reftable_reader_incref(struct reftable_reader *r)
+{
+	if (!r->refcount)
+		BUG("cannot increment ref counter of dead reader");
+	r->refcount++;
+}
+
+void reftable_reader_decref(struct reftable_reader *r)
 {
 	if (!r)
 		return;
-	reader_close(r);
+	if (!r->refcount)
+		BUG("cannot decrement ref counter of dead reader");
+	if (--r->refcount)
+		return;
+	block_source_close(&r->source);
+	REFTABLE_FREE_AND_NULL(r->name);
 	reftable_free(r);
 }
 
@@ -681,7 +702,10 @@ static int reftable_reader_refs_for_indexed(struct reftable_reader *r,
 	struct indexed_table_ref_iter *itr = NULL;
 
 	/* Look through the reverse index. */
-	reader_init_iter(r, &oit, BLOCK_TYPE_OBJ);
+	err = reader_init_iter(r, &oit, BLOCK_TYPE_OBJ);
+	if (err < 0)
+		goto done;
+
 	err = iterator_seek(&oit, &want);
 	if (err != 0)
 		goto done;
@@ -699,7 +723,7 @@ static int reftable_reader_refs_for_indexed(struct reftable_reader *r,
 		goto done;
 	}
 
-	err = new_indexed_table_ref_iter(&itr, r, oid, hash_size(r->hash_id),
+	err = indexed_table_ref_iter_new(&itr, r, oid, hash_size(r->hash_id),
 					 got.u.obj.offsets,
 					 got.u.obj.offset_len);
 	if (err < 0)
@@ -724,23 +748,37 @@ static int reftable_reader_refs_for_unindexed(struct reftable_reader *r,
 	int err;
 
 	REFTABLE_ALLOC_ARRAY(ti, 1);
-	table_iter_init(ti, r);
-	err = table_iter_seek_start(ti, BLOCK_TYPE_REF, 0);
-	if (err < 0) {
-		reftable_free(ti);
-		return err;
+	if (!ti) {
+		err = REFTABLE_OUT_OF_MEMORY_ERROR;
+		goto out;
 	}
 
-	filter = reftable_malloc(sizeof(struct filtering_ref_iterator));
+	table_iter_init(ti, r);
+	err = table_iter_seek_start(ti, BLOCK_TYPE_REF, 0);
+	if (err < 0)
+		goto out;
+
+	filter = reftable_malloc(sizeof(*filter));
+	if (!filter) {
+		err = REFTABLE_OUT_OF_MEMORY_ERROR;
+		goto out;
+	}
 	*filter = empty;
 
 	strbuf_add(&filter->oid, oid, oid_len);
-	reftable_table_from_reader(&filter->tab, r);
-	filter->double_check = 0;
 	iterator_from_table_iter(&filter->it, ti);
 
 	iterator_from_filtering_ref_iterator(it, filter);
-	return 0;
+
+	err = 0;
+
+out:
+	if (err < 0) {
+		if (ti)
+			table_iter_close(ti);
+		reftable_free(ti);
+	}
+	return err;
 }
 
 int reftable_reader_refs_for(struct reftable_reader *r,
@@ -759,66 +797,6 @@ uint64_t reftable_reader_max_update_index(struct reftable_reader *r)
 uint64_t reftable_reader_min_update_index(struct reftable_reader *r)
 {
 	return r->min_update_index;
-}
-
-/* generic table interface. */
-
-static void reftable_reader_init_iter_void(void *tab,
-					   struct reftable_iterator *it,
-					   uint8_t typ)
-{
-	reader_init_iter(tab, it, typ);
-}
-
-static uint32_t reftable_reader_hash_id_void(void *tab)
-{
-	return reftable_reader_hash_id(tab);
-}
-
-static uint64_t reftable_reader_min_update_index_void(void *tab)
-{
-	return reftable_reader_min_update_index(tab);
-}
-
-static uint64_t reftable_reader_max_update_index_void(void *tab)
-{
-	return reftable_reader_max_update_index(tab);
-}
-
-static struct reftable_table_vtable reader_vtable = {
-	.init_iter = reftable_reader_init_iter_void,
-	.hash_id = reftable_reader_hash_id_void,
-	.min_update_index = reftable_reader_min_update_index_void,
-	.max_update_index = reftable_reader_max_update_index_void,
-};
-
-void reftable_table_from_reader(struct reftable_table *tab,
-				struct reftable_reader *reader)
-{
-	assert(!tab->ops);
-	tab->ops = &reader_vtable;
-	tab->table_arg = reader;
-}
-
-
-int reftable_reader_print_file(const char *tablename)
-{
-	struct reftable_block_source src = { NULL };
-	int err = reftable_block_source_from_file(&src, tablename);
-	struct reftable_reader *r = NULL;
-	struct reftable_table tab = { NULL };
-	if (err < 0)
-		goto done;
-
-	err = reftable_new_reader(&r, &src, tablename);
-	if (err < 0)
-		goto done;
-
-	reftable_table_from_reader(&tab, r);
-	err = reftable_table_print(&tab);
-done:
-	reftable_reader_free(r);
-	return err;
 }
 
 int reftable_reader_print_blocks(const char *tablename)
@@ -850,7 +828,7 @@ int reftable_reader_print_blocks(const char *tablename)
 	if (err < 0)
 		goto done;
 
-	err = reftable_new_reader(&r, &src, tablename);
+	err = reftable_reader_new(&r, &src, tablename);
 	if (err < 0)
 		goto done;
 
@@ -881,7 +859,7 @@ int reftable_reader_print_blocks(const char *tablename)
 	}
 
 done:
-	reftable_reader_free(r);
+	reftable_reader_decref(r);
 	table_iter_close(&ti);
 	return err;
 }

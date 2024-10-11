@@ -81,6 +81,8 @@ struct commit *lookup_commit_reference_gently(struct repository *r,
 					      const struct object_id *oid,
 					      int quiet);
 struct commit *lookup_commit_reference_by_name(const char *name);
+struct commit *lookup_commit_reference_by_name_gently(const char *name,
+						      int quiet);
 
 /*
  * Look up object named by "oid", dereference tag as necessary,
@@ -107,6 +109,8 @@ static inline int repo_parse_commit_no_graph(struct repository *r,
 }
 
 void parse_commit_or_die(struct commit *item);
+
+void unparse_commit(struct repository *r, const struct object_id *oid);
 
 struct buffer_slab;
 struct buffer_slab *allocate_commit_buffer_slab(void);
@@ -240,7 +244,6 @@ int commit_graft_pos(struct repository *r, const struct object_id *oid);
 int register_commit_graft(struct repository *r, struct commit_graft *, int);
 void prepare_commit_graft(struct repository *r);
 struct commit_graft *lookup_commit_graft(struct repository *r, const struct object_id *oid);
-void reset_commit_grafts(struct repository *r);
 
 struct commit *get_fork_point(const char *refname, struct commit *commit);
 
@@ -251,7 +254,10 @@ struct oid_array;
 struct ref;
 int for_each_commit_graft(each_commit_graft_fn, void *);
 
-int interactive_add(const char **argv, const char *prefix, int patch);
+int interactive_add(struct repository *repo,
+		    const char **argv,
+		    const char *prefix,
+		    int patch);
 
 struct commit_extra_header {
 	struct commit_extra_header *next;

@@ -85,12 +85,18 @@ struct commit *lookup_commit(struct repository *r, const struct object_id *oid)
 
 struct commit *lookup_commit_reference_by_name(const char *name)
 {
+	return lookup_commit_reference_by_name_gently(name, 0);
+}
+
+struct commit *lookup_commit_reference_by_name_gently(const char *name,
+						      int quiet)
+{
 	struct object_id oid;
 	struct commit *commit;
 
 	if (repo_get_oid_committish(the_repository, name, &oid))
 		return NULL;
-	commit = lookup_commit_reference(the_repository, &oid);
+	commit = lookup_commit_reference_gently(the_repository, &oid, quiet);
 	if (repo_parse_commit(the_repository, commit))
 		return NULL;
 	return commit;
@@ -177,7 +183,7 @@ int commit_graft_pos(struct repository *r, const struct object_id *oid)
 		       commit_graft_oid_access);
 }
 
-static void unparse_commit(struct repository *r, const struct object_id *oid)
+void unparse_commit(struct repository *r, const struct object_id *oid)
 {
 	struct commit *c = lookup_commit(r, oid);
 
@@ -286,14 +292,14 @@ static int read_graft_file(struct repository *r, const char *graft_file)
 
 void prepare_commit_graft(struct repository *r)
 {
-	char *graft_file;
+	const char *graft_file;
 
 	if (r->parsed_objects->commit_graft_prepared)
 		return;
 	if (!startup_info->have_repository)
 		return;
 
-	graft_file = get_graft_file(r);
+	graft_file = repo_get_graft_file(r);
 	read_graft_file(r, graft_file);
 	/* make sure shallows are read */
 	is_repository_shallow(r);
@@ -316,18 +322,6 @@ int for_each_commit_graft(each_commit_graft_fn fn, void *cb_data)
 	for (i = ret = 0; i < the_repository->parsed_objects->grafts_nr && !ret; i++)
 		ret = fn(the_repository->parsed_objects->grafts[i], cb_data);
 	return ret;
-}
-
-void reset_commit_grafts(struct repository *r)
-{
-	int i;
-
-	for (i = 0; i < r->parsed_objects->grafts_nr; i++) {
-		unparse_commit(r, &r->parsed_objects->grafts[i]->oid);
-		free(r->parsed_objects->grafts[i]);
-	}
-	r->parsed_objects->grafts_nr = 0;
-	r->parsed_objects->commit_graft_prepared = 0;
 }
 
 struct commit_buffer {
@@ -601,7 +595,8 @@ int repo_parse_commit_internal(struct repository *r,
 	}
 
 	ret = parse_commit_buffer(r, item, buffer, size, 0);
-	if (save_commit_buffer && !ret) {
+	if (save_commit_buffer && !ret &&
+	    !get_cached_commit_buffer(r, item, NULL)) {
 		set_commit_buffer(r, item, buffer, size);
 		return 0;
 	}
@@ -1150,11 +1145,14 @@ int add_header_signature(struct strbuf *buf, struct strbuf *sig, const struct gi
 
 static int sign_commit_to_strbuf(struct strbuf *sig, struct strbuf *buf, const char *keyid)
 {
+	char *keyid_to_free = NULL;
+	int ret = 0;
 	if (!keyid || !*keyid)
-		keyid = get_signing_key();
+		keyid = keyid_to_free = get_signing_key();
 	if (sign_buffer(buf, sig, keyid))
-		return -1;
-	return 0;
+		ret = -1;
+	free(keyid_to_free);
+	return ret;
 }
 
 int parse_signed_commit(const struct commit *commit,
@@ -1960,5 +1958,5 @@ int run_commit_hook(int editor_is_used, const char *index_file,
 	va_end(args);
 
 	opt.invoked_hook = invoked_hook;
-	return run_hooks_opt(name, &opt);
+	return run_hooks_opt(the_repository, name, &opt);
 }

@@ -5,6 +5,7 @@ test_description='compare full workdir to sparse workdir'
 GIT_TEST_SPLIT_INDEX=0
 GIT_TEST_SPARSE_INDEX=
 
+TEST_PASSES_SANITIZE_LEAK=true
 . ./test-lib.sh
 
 test_expect_success 'setup' '
@@ -179,22 +180,26 @@ init_repos_as_submodules () {
 }
 
 run_on_sparse () {
+	cat >run-on-sparse-input &&
+
 	(
 		cd sparse-checkout &&
 		GIT_PROGRESS_DELAY=100000 "$@" >../sparse-checkout-out 2>../sparse-checkout-err
-	) &&
+	) <run-on-sparse-input &&
 	(
 		cd sparse-index &&
 		GIT_PROGRESS_DELAY=100000 "$@" >../sparse-index-out 2>../sparse-index-err
-	)
+	) <run-on-sparse-input
 }
 
 run_on_all () {
+	cat >run-on-all-input &&
+
 	(
 		cd full-checkout &&
 		GIT_PROGRESS_DELAY=100000 "$@" >../full-checkout-out 2>../full-checkout-err
-	) &&
-	run_on_sparse "$@"
+	) <run-on-all-input &&
+	run_on_sparse "$@" <run-on-all-input
 }
 
 test_all_match () {
@@ -221,7 +226,7 @@ test_sparse_unstaged () {
 	done
 }
 
-# Usage: test_sprase_checkout_set "<c1> ... <cN>" "<s1> ... <sM>"
+# Usage: test_sparse_checkout_set "<c1> ... <cN>" "<s1> ... <sM>"
 # Verifies that "git sparse-checkout set <c1> ... <cN>" succeeds and
 # leaves the sparse index in a state where <s1> ... <sM> are sparse
 # directories (and <c1> ... <cN> are not).
@@ -803,6 +808,8 @@ test_expect_success 'update-index --remove outside sparse definition' '
 	test_sparse_match git diff --cached --name-status &&
 	test_cmp expect sparse-checkout-out &&
 
+	test_sparse_match git diff-index --cached HEAD &&
+
 	# Reset the state
 	test_all_match git reset --hard &&
 
@@ -811,6 +818,8 @@ test_expect_success 'update-index --remove outside sparse definition' '
 	test_sparse_match git update-index --remove --ignore-skip-worktree-entries folder1/a &&
 	test_sparse_match git diff --cached --name-status &&
 	test_must_be_empty sparse-checkout-out &&
+
+	test_sparse_match git diff-index --cached HEAD &&
 
 	# Reset the state
 	test_all_match git reset --hard &&
@@ -823,7 +832,9 @@ test_expect_success 'update-index --remove outside sparse definition' '
 	D	folder1/a
 	EOF
 	test_sparse_match git diff --cached --name-status &&
-	test_cmp expect sparse-checkout-out
+	test_cmp expect sparse-checkout-out &&
+
+	test_sparse_match git diff-index --cached HEAD
 '
 
 test_expect_success 'update-index with directories' '
@@ -1551,7 +1562,7 @@ test_expect_success 'sparse-index is not expanded: describe' '
 	ensure_not_expanded describe
 '
 
-test_expect_success 'sparse index is not expanded: diff' '
+test_expect_success 'sparse index is not expanded: diff and diff-index' '
 	init_repos &&
 
 	write_script edit-contents <<-\EOF &&
@@ -1568,6 +1579,7 @@ test_expect_success 'sparse index is not expanded: diff' '
 	test_all_match git diff --cached &&
 	ensure_not_expanded diff &&
 	ensure_not_expanded diff --cached &&
+	ensure_not_expanded diff-index --cached HEAD &&
 
 	# Add file outside cone
 	test_all_match git reset --hard &&
@@ -1582,6 +1594,7 @@ test_expect_success 'sparse index is not expanded: diff' '
 	test_all_match git diff --cached &&
 	ensure_not_expanded diff &&
 	ensure_not_expanded diff --cached &&
+	ensure_not_expanded diff-index --cached HEAD &&
 
 	# Merge conflict outside cone
 	# The sparse checkout will report a warning that is not in the
@@ -1594,7 +1607,8 @@ test_expect_success 'sparse index is not expanded: diff' '
 	test_all_match git diff &&
 	test_all_match git diff --cached &&
 	ensure_not_expanded diff &&
-	ensure_not_expanded diff --cached
+	ensure_not_expanded diff --cached &&
+	ensure_not_expanded diff-index --cached HEAD
 '
 
 test_expect_success 'sparse index is not expanded: show and rev-parse' '
@@ -2342,7 +2356,46 @@ test_expect_success 'advice.sparseIndexExpanded' '
 	mkdir -p sparse-index/deep/deeper2/deepest &&
 	touch sparse-index/deep/deeper2/deepest/bogus &&
 	git -C sparse-index status 2>err &&
-	grep "The sparse index is expanding to a full index" err
+	grep "The sparse index is expanding to a full index" err &&
+
+	git -C sparse-index sparse-checkout disable 2>err &&
+	test_line_count = 0 err
+'
+
+test_expect_success 'cat-file -p' '
+	init_repos &&
+	echo "new content" >>full-checkout/deep/a &&
+	echo "new content" >>sparse-checkout/deep/a &&
+	echo "new content" >>sparse-index/deep/a &&
+	run_on_all git add deep/a &&
+
+	test_all_match git cat-file -p :deep/a &&
+	ensure_not_expanded cat-file -p :deep/a &&
+	test_all_match git cat-file -p :folder1/a &&
+	ensure_expanded cat-file -p :folder1/a
+'
+
+test_expect_success 'cat-file --batch' '
+	init_repos &&
+	echo "new content" >>full-checkout/deep/a &&
+	echo "new content" >>sparse-checkout/deep/a &&
+	echo "new content" >>sparse-index/deep/a &&
+	run_on_all git add deep/a &&
+
+	echo ":deep/a" >in &&
+	test_all_match git cat-file --batch <in &&
+	ensure_not_expanded cat-file --batch <in &&
+
+	echo ":folder1/a" >in &&
+	test_all_match git cat-file --batch <in &&
+	ensure_expanded cat-file --batch <in &&
+
+	cat >in <<-\EOF &&
+	:deep/a
+	:folder1/a
+	EOF
+	test_all_match git cat-file --batch <in &&
+	ensure_expanded cat-file --batch <in
 '
 
 test_done

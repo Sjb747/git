@@ -6,6 +6,8 @@ TEST_PASSES_SANITIZE_LEAK=true
 . ./test-lib.sh
 . "$TEST_DIRECTORY"/lib-bitmap.sh
 
+GIT_TEST_MULTI_PACK_INDEX=0
+GIT_TEST_MULTI_PACK_INDEX_WRITE_INCREMENTAL=0
 objdir=.git/objects
 packdir=$objdir/pack
 
@@ -29,20 +31,24 @@ test_pack_objects_reused_all () {
 	: >trace2.txt &&
 	GIT_TRACE2_EVENT="$PWD/trace2.txt" \
 		git pack-objects --stdout --revs --all --delta-base-offset \
-		>/dev/null &&
+		>got.pack &&
 
 	test_pack_reused "$1" <trace2.txt &&
-	test_packs_reused "$2" <trace2.txt
+	test_packs_reused "$2" <trace2.txt &&
+
+	git index-pack --strict -o got.idx got.pack
 }
 
 # test_pack_objects_reused <pack-reused> <packs-reused>
 test_pack_objects_reused () {
 	: >trace2.txt &&
 	GIT_TRACE2_EVENT="$PWD/trace2.txt" \
-		git pack-objects --stdout --revs >/dev/null &&
+		git pack-objects --stdout --revs >got.pack &&
 
 	test_pack_reused "$1" <trace2.txt &&
-	test_packs_reused "$2" <trace2.txt
+	test_packs_reused "$2" <trace2.txt &&
+
+	git index-pack --strict -o got.idx got.pack
 }
 
 test_expect_success 'preferred pack is reused for single-pack reuse' '
@@ -228,6 +234,29 @@ test_expect_success 'non-omitted delta in MIDX preferred pack' '
 	git show-index <$packdir/pack-$p1.idx >expect &&
 
 	test_pack_objects_reused_all $(wc -l <expect) 1
+'
+
+test_expect_success 'duplicate objects' '
+	git init duplicate-objects &&
+	(
+		cd duplicate-objects &&
+
+		git config pack.allowPackReuse multi &&
+
+		test_commit base &&
+
+		git repack -a &&
+
+		git rev-parse HEAD^{tree} >in &&
+		p="$(git pack-objects $packdir/pack <in)" &&
+
+		git multi-pack-index write --bitmap --preferred-pack=pack-$p.idx &&
+
+		objects_nr="$(git rev-list --count --all --objects)" &&
+		packs_nr="$(find $packdir -type f -name "pack-*.pack" | wc -l)" &&
+
+		test_pack_objects_reused_all $objects_nr $packs_nr
+	)
 '
 
 test_done

@@ -51,6 +51,17 @@ struct reftable_write_options {
 	 * tables to compact. Defaults to 2 if unset.
 	 */
 	uint8_t auto_compaction_factor;
+
+	/*
+	 * The number of milliseconds to wait when trying to lock "tables.list".
+	 * Note that this does not apply to locking individual tables, as these
+	 * should only ever be locked when already holding the "tables.list"
+	 * lock.
+	 *
+	 * Passing 0 will fail immediately when the file is locked, passing a
+	 * negative value will cause us to block indefinitely.
+	 */
+	long lock_timeout_ms;
 };
 
 /* reftable_block_stats holds statistics for a single block type */
@@ -90,11 +101,13 @@ struct reftable_stats {
 	int object_id_len;
 };
 
-/* reftable_new_writer creates a new writer */
-struct reftable_writer *
-reftable_new_writer(ssize_t (*writer_func)(void *, const void *, size_t),
-		    int (*flush_func)(void *),
-		    void *writer_arg, const struct reftable_write_options *opts);
+struct reftable_writer;
+
+/* Create a new writer. */
+int reftable_writer_new(struct reftable_writer **out,
+			ssize_t (*writer_func)(void *, const void *, size_t),
+			int (*flush_func)(void *),
+			void *writer_arg, const struct reftable_write_options *opts);
 
 /* Set the range of update indices for the records we will add. When writing a
    table into a stack, the min should be at least

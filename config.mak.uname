@@ -8,7 +8,6 @@ uname_S := $(shell sh -c 'uname -s 2>/dev/null || echo not')
 uname_M := $(shell sh -c 'uname -m 2>/dev/null || echo not')
 uname_O := $(shell sh -c 'uname -o 2>/dev/null || echo not')
 uname_R := $(shell sh -c 'uname -r 2>/dev/null || echo not')
-uname_P := $(shell sh -c 'uname -p 2>/dev/null || echo not')
 uname_V := $(shell sh -c 'uname -v 2>/dev/null || echo not')
 
 ifneq ($(findstring MINGW,$(uname_S)),)
@@ -249,6 +248,7 @@ ifeq ($(uname_O),Cygwin)
         else
 		NO_REGEX = UnfortunatelyYes
         endif
+	HAVE_DEV_TTY = YesPlease
 	HAVE_ALLOCA_H = YesPlease
 	NEEDS_LIBICONV = YesPlease
 	NO_FAST_WORKING_DIRECTORY = UnfortunatelyYes
@@ -649,6 +649,7 @@ ifeq ($(uname_S),OS/390)
 	NO_GECOS_IN_PWENT = YesPlease
 	HAVE_STRINGS_H = YesPlease
 	NEEDS_MODE_TRANSLATION = YesPlease
+	HAVE_ZOS_GET_EXECUTABLE_PATH = YesPlease
 endif
 ifeq ($(uname_S),MINGW)
         ifeq ($(shell expr "$(uname_R)" : '1\.'),2)

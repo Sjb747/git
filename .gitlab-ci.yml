@@ -9,6 +9,8 @@ workflow:
 
 test:linux:
   image: $image
+  tags:
+    - saas-linux-medium-amd64
   variables:
     CUSTOM_PATH: "/custom"
   before_script:
@@ -25,6 +27,9 @@ test:linux:
       fi
   parallel:
     matrix:
+      - jobname: linux-old
+        image: ubuntu:16.04
+        CC: gcc
       - jobname: linux-sha256
         image: ubuntu:latest
         CC: clang
@@ -118,8 +123,31 @@ check-whitespace:
   image: ubuntu:latest
   before_script:
     - ./ci/install-dependencies.sh
+  # Since $CI_MERGE_REQUEST_TARGET_BRANCH_SHA is only defined for merged
+  # pipelines, we fallback to $CI_MERGE_REQUEST_DIFF_BASE_SHA, which should
+  # be defined in all pipelines.
   script:
-    - ./ci/check-whitespace.sh "$CI_MERGE_REQUEST_TARGET_BRANCH_SHA"
+    - |
+      R=${CI_MERGE_REQUEST_TARGET_BRANCH_SHA-${CI_MERGE_REQUEST_DIFF_BASE_SHA:?}} || exit
+      ./ci/check-whitespace.sh "$R"
+  rules:
+    - if: $CI_PIPELINE_SOURCE == 'merge_request_event'
+
+check-style:
+  image: ubuntu:latest
+  allow_failure: true
+  variables:
+    CC: clang
+    jobname: ClangFormat
+  before_script:
+    - ./ci/install-dependencies.sh
+  # Since $CI_MERGE_REQUEST_TARGET_BRANCH_SHA is only defined for merged
+  # pipelines, we fallback to $CI_MERGE_REQUEST_DIFF_BASE_SHA, which should
+  # be defined in all pipelines.
+  script:
+    - |
+      R=${CI_MERGE_REQUEST_TARGET_BRANCH_SHA-${CI_MERGE_REQUEST_DIFF_BASE_SHA:?}} || exit
+      ./ci/run-style-check.sh "$R"
   rules:
     - if: $CI_PIPELINE_SOURCE == 'merge_request_event'
 
